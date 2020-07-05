@@ -61,7 +61,7 @@ trait Shell {
     fn do_fg(&mut self, args: &[&str]) -> CliResult;
     fn list_jobs(&self) -> CliResult;
     fn create_fd_and_truncate_redirection_pattern(cmd: &mut str, is_output: bool) -> FdCmd;
-    fn process(cmds: &[&str], i: usize, pipe_write: i32);
+    fn process(cmds: &[&str], pipe_write: i32);
 }
 
 fn ok<T: ToString>(s: T) -> CliResult {
@@ -264,23 +264,23 @@ impl Shell for Rsh {
         }
     }
 
-    fn process(cmds: &[&str], i: usize, pipe_write: i32) {
-        if i == cmds.len() - 1 {
-            let mut s = String::new();
-            s.push_str(cmds.last().unwrap_or(&""));
+    fn process(cmds: &[&str], pipe_write: i32) {
+        if cmds.len() == 1 {
+            let mut first_cmd = String::new();
+            first_cmd.push_str(cmds.first().unwrap_or(&""));
             let (input_fd, cmd): FdCmd =
-                Rsh::create_fd_and_truncate_redirection_pattern(&mut s, false);
+                Rsh::create_fd_and_truncate_redirection_pattern(&mut first_cmd, false);
             Rsh::exec(&cmd, input_fd, pipe_write);
         } else {
             let (read_end, write_end) = unistd::pipe().unwrap();
             match unistd::fork().unwrap() {
                 ForkResult::Parent { .. } => {
                     unistd::close(write_end).unwrap();
-                    Rsh::exec(&cmds[i], read_end, pipe_write);
+                    Rsh::exec(cmds.first().unwrap(), read_end, pipe_write);
                 }
                 ForkResult::Child => {
                     unistd::close(read_end).unwrap();
-                    Rsh::process(cmds, i + 1, write_end);
+                    Rsh::process(&cmds[1..], write_end);
                 }
             }
         }
@@ -317,7 +317,7 @@ impl Shell for Rsh {
                 let (output_fd, cmd): FdCmd =
                     Rsh::create_fd_and_truncate_redirection_pattern(&mut last_cmd, true);
                 cmds[0] = &cmd;
-                Rsh::process(&cmds, 0, output_fd);
+                Rsh::process(&cmds, output_fd);
             }
             Ok(ForkResult::Parent { child, .. }) => {
                 let bg = match parts.last() {
@@ -510,7 +510,7 @@ impl Rsh {
 
 extern "C" fn handle_sigint(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
-    let pid = SHELL.lock().unwrap().get(0).unwrap().fg_pid();
+    let pid = { SHELL.lock().unwrap().get(0).unwrap().fg_pid() };
     if pid != 0 {
         if let Err(e) = signal::kill(Pid::from_raw(pid), Signal::SIGINT) {
             println!("{}: {}", "kill", e.to_string());
@@ -551,7 +551,7 @@ extern "C" fn handle_sigchld(signal: libc::c_int) {
                                 .unwrap()
                                 .get_jid_by_pid(pid.as_raw())
                         };
-                        println!("Job [{}] ({}) terminated by signal 2\n", jid, pid.as_raw())
+                        println!("Job [{}] ({}) terminated by signal 2", jid, pid.as_raw())
                     }
                     {
                         SHELL
@@ -581,6 +581,12 @@ extern "C" fn handle_sigtstp(signal: libc::c_int) {
 
 extern "C" fn handle_sigquit(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
-    { write!(io::stdout(), "Terminating after receipt of SIGQUIT signal") }.unwrap();
+    {
+        write!(
+            io::stdout(),
+            "Terminating after receipt of SIGQUIT signal\n"
+        )
+    }
+    .unwrap();
     process::exit(1);
 }
