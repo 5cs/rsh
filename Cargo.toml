@@ -1,0 +1,12 @@
+[package]
+name = "rsh"
+version = "0.1.0"
+authors = ["logger <dengtl17@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2"
+nix = "0.17.0"
+lazy_static = "1.4.0"
