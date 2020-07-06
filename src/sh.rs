@@ -60,6 +60,7 @@ trait Shell {
     fn do_bg(&mut self, args: &[&str]) -> CliResult;
     fn do_fg(&mut self, args: &[&str]) -> CliResult;
     fn list_jobs(&self) -> CliResult;
+    fn change_dir(&self, args: &[&str]) -> CliResult;
     fn create_fd_and_truncate_redirection_pattern(cmd: &mut str, is_output: bool) -> FdCmd;
     fn process(cmds: &[&str], pipe_write: i32);
 }
@@ -134,6 +135,11 @@ impl<'a> Cli<'a> {
                 let res = sh.do_fg(args);
                 res
             });
+
+            cli.builtin("cd", |sh, args| {
+                let res = sh.change_dir(args);
+                res
+            })
         }
         cli
     }
@@ -372,6 +378,39 @@ impl Shell for Rsh {
             return err("bg command requires PID or %%jobid argument\n");
         }
         self.do_bgfg(args, false)
+    }
+
+    fn change_dir(&self, args: &[&str]) -> CliResult {
+        if args.len() > 1 {
+            { write!(io::stderr(), "cd: too many argument\n") }.unwrap();
+            io::stderr().flush().unwrap();
+        } else if args.len() == 0 {
+            std::env::set_current_dir(dirs::home_dir().unwrap()).unwrap();
+        } else {
+            let target = args[0].trim().to_owned();
+            // TODO: cd -
+            let mut path = if target.starts_with("/") {
+                std::path::PathBuf::new().join("/")
+            } else {
+                std::env::current_dir().unwrap()
+            };
+            for part in target.split("/") {
+                if part == ".." {
+                    if !path.pop() {
+                        path = path.join("/");
+                    }
+                    continue;
+                }
+                if part != "." {
+                    path = path.join(part);
+                }
+            }
+            if let Err(e) = std::env::set_current_dir(path) {
+                println!("cd: {}", e.to_string());
+                io::stdout().flush().unwrap();
+            }
+        }
+        ok("")
     }
 }
 
