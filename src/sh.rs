@@ -265,7 +265,7 @@ impl Shell for Rsh {
     }
 
     fn process(cmds: &[&str], pipe_write: i32) {
-        if cmds.len() == 1 {
+        if cmds.len() <= 1 {
             let mut first_cmd = String::new();
             first_cmd.push_str(cmds.first().unwrap_or(&""));
             let (input_fd, cmd): FdCmd =
@@ -308,7 +308,7 @@ impl Shell for Rsh {
                 // example 0: ls -l | wc
                 // example 1: tee < input.txt | grep cargo | wc > output.txt
                 // example 2: tee < input.txt > output.txt
-                // example 3: tee > output.txt < intpu.txt
+                // example 3: tee > output.txt < input.txt
                 let mut cmds: Vec<_> = cmdline.split('|').map(|x| x.trim()).collect();
                 cmds.reverse(); // reverse order, let last command's process run as child of shell process
 
@@ -520,7 +520,7 @@ extern "C" fn handle_sigint(signal: libc::c_int) {
 }
 
 extern "C" fn handle_sigchld(signal: libc::c_int) {
-    let signal = Signal::try_from(signal).unwrap();
+    let _signal = Signal::try_from(signal).unwrap();
     loop {
         match wait::waitpid(
             Pid::from_raw(-1),
@@ -542,7 +542,7 @@ extern "C" fn handle_sigchld(signal: libc::c_int) {
                     };
                     println!("Job [{}] ({}) stopped by signal 20", jid, pid.as_raw());
                 } else {
-                    if n == WaitStatus::Signaled(pid, signal, true) {
+                    if n == WaitStatus::Signaled(pid, Signal::SIGINT, false) {
                         let jid = {
                             SHELL
                                 .lock()
