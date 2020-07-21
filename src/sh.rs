@@ -14,12 +14,11 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::unix::io::*;
 use std::process;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 type CliResult = Result<String, String>;
 
 pub struct Cli<'a> {
-    sh: usize,
     builtins: HashMap<String, Box<dyn Fn(&mut Rsh, &[&str]) -> CliResult + 'a>>,
 }
 
@@ -48,8 +47,20 @@ struct Rsh {
     jobs: Vec<Box<Job>>,
 }
 
+impl Default for Rsh {
+    fn default() -> Self {
+        Rsh {
+            emit_prompt: true,
+            prompt: "rsh> ".to_owned(),
+            verbose: false,
+            next_jid: 1,
+            jobs: Vec::new(),
+        }
+    }
+}
+
 lazy_static! {
-    static ref SHELL: Mutex<Vec<Rsh>> = Mutex::new(vec![]);
+    static ref SH: Arc<Mutex<Rsh>> = Arc::new(Mutex::new(Rsh::default()));
 }
 
 type FdCmd = (i32, String);
@@ -57,6 +68,7 @@ type FdCmd = (i32, String);
 trait Shell {
     fn run(&mut self, cmdline: &str, args: &[&str]) -> CliResult;
     fn exec(cmd: &str, input_fd: i32, output_fd: i32);
+    fn get_fg_pid() -> i32;
     fn do_bg(&mut self, args: &[&str]) -> CliResult;
     fn do_fg(&mut self, args: &[&str]) -> CliResult;
     fn list_jobs(&self) -> CliResult;
@@ -87,23 +99,7 @@ impl<'a> Cli<'a> {
             unsafe { signal::signal(Signal::SIGQUIT, handler) }.unwrap();
         }
 
-        // create sh object
-        let sh = {
-            {
-                SHELL.lock().unwrap().push(Rsh {
-                    emit_prompt: true,
-                    prompt: "rsh> ".to_owned(),
-                    verbose: false,
-                    next_jid: 1,
-                    jobs: Vec::new(),
-                });
-            }
-            // SHELL.lock().unwrap().len() - 1
-            0
-        };
-
         let mut cli = Cli {
-            sh,
             builtins: HashMap::new(),
         };
         // register builtins
@@ -157,19 +153,22 @@ impl<'a> Cli<'a> {
             return Ok("".to_owned());
         }
         let res = match self.builtins.get(parts[0]) {
-            Some(builtin) => builtin(SHELL.lock().unwrap().get_mut(self.sh).unwrap(), &parts[1..]),
-            None => SHELL
-                .lock()
-                .unwrap()
-                .get_mut(self.sh)
-                .unwrap()
-                .run(line, &parts),
+            Some(builtin) => {
+                let arc = SH.clone();
+                let mut sh = arc.lock().unwrap();
+                builtin(&mut sh, &parts[1..])
+            }
+            None => {
+                let arc = SH.clone();
+                let mut sh = arc.lock().unwrap();
+                sh.run(line, &parts)
+            }
         };
         // wait fg job to finish
-        let pid = { SHELL.lock().unwrap().get(self.sh).unwrap().fg_pid() };
+        let pid = Rsh::get_fg_pid();
         if pid > 0 {
             loop {
-                let pid1 = { SHELL.lock().unwrap().get(self.sh).unwrap().fg_pid() };
+                let pid1 = Rsh::get_fg_pid();
                 if pid1 != pid {
                     break;
                 }
@@ -183,7 +182,12 @@ impl<'a> Cli<'a> {
         let mut buf = String::new();
         loop {
             {
-                if SHELL.lock().unwrap().get(self.sh).unwrap().emit_prompt {
+                let emit_prompt = {
+                    let arc = SH.clone();
+                    let sh = arc.lock().unwrap();
+                    sh.emit_prompt
+                };
+                if emit_prompt {
                     self.dispatch("prompt").unwrap();
                     io::stdout().flush().unwrap();
                 }
@@ -364,6 +368,12 @@ impl Shell for Rsh {
             }
         }
         ok("")
+    }
+
+    fn get_fg_pid() -> i32 {
+        let arc = SH.clone();
+        let sh = arc.lock().unwrap();
+        sh.fg_pid()
     }
 
     fn do_bg(&mut self, args: &[&str]) -> CliResult {
@@ -549,7 +559,7 @@ impl Rsh {
 
 extern "C" fn handle_sigint(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
-    let pid = { SHELL.lock().unwrap().get(0).unwrap().fg_pid() };
+    let pid = Rsh::get_fg_pid();
     if pid != 0 {
         if let Err(e) = signal::kill(Pid::from_raw(pid), Signal::SIGINT) {
             println!("{}: {}", "kill", e.to_string());
@@ -572,33 +582,24 @@ extern "C" fn handle_sigchld(signal: libc::c_int) {
                 let pid = n.pid().unwrap();
                 if n == WaitStatus::Stopped(pid, Signal::SIGTSTP) {
                     let jid = {
-                        SHELL
-                            .lock()
-                            .unwrap()
-                            .get_mut(0)
-                            .unwrap()
-                            .set_job_stopped(pid.as_raw())
+                        let arc = SH.clone();
+                        let mut sh = arc.lock().unwrap();
+                        sh.set_job_stopped(pid.as_raw())
                     };
                     println!("Job [{}] ({}) stopped by signal 20", jid, pid.as_raw());
                 } else {
                     if n == WaitStatus::Signaled(pid, Signal::SIGINT, false) {
                         let jid = {
-                            SHELL
-                                .lock()
-                                .unwrap()
-                                .get(0)
-                                .unwrap()
-                                .get_jid_by_pid(pid.as_raw())
+                            let arc = SH.clone();
+                            let sh = arc.lock().unwrap();
+                            sh.get_jid_by_pid(pid.as_raw())
                         };
                         println!("Job [{}] ({}) terminated by signal 2", jid, pid.as_raw())
                     }
                     {
-                        SHELL
-                            .lock()
-                            .unwrap()
-                            .get_mut(0)
-                            .unwrap()
-                            .delete_job_by_pid(pid.as_raw())
+                        let arc = SH.clone();
+                        let mut sh = arc.lock().unwrap();
+                        sh.delete_job_by_pid(pid.as_raw())
                     };
                 }
             }
@@ -609,7 +610,7 @@ extern "C" fn handle_sigchld(signal: libc::c_int) {
 
 extern "C" fn handle_sigtstp(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
-    let pid = { SHELL.lock().unwrap().get(0).unwrap().fg_pid() };
+    let pid = Rsh::get_fg_pid();
     if pid != 0 {
         if let Err(e) = signal::kill(Pid::from_raw(pid), Signal::SIGTSTP) {
             println!("{}: {}", "kill", e.to_string());
