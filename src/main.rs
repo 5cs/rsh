@@ -1,6 +1,12 @@
+mod cli;
+mod common;
+mod rsh;
 mod sh;
+mod signal;
+
+use cli::*;
 
 fn main() {
-    let mut client = sh::Cli::new();
+    let mut client = Cli::new();
     client.go();
 }
