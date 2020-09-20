@@ -14,7 +14,7 @@ pub extern "C" fn handle_sigint(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
     let pid = Rsh::get_fg_pid();
     if pid != 0 {
-        if let Err(e) = signal::kill(Pid::from_raw(pid), Signal::SIGINT) {
+        if let Err(e) = signal::kill(Pid::from_raw(-pid), Signal::SIGINT) {
             println!("{}: {}", "kill", e.to_string());
             io::stdout().flush().unwrap();
         }
@@ -53,7 +53,7 @@ pub extern "C" fn handle_sigtstp(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
     let pid = Rsh::get_fg_pid();
     if pid != 0 {
-        if let Err(e) = signal::kill(Pid::from_raw(pid), Signal::SIGTSTP) {
+        if let Err(e) = signal::kill(Pid::from_raw(-pid), Signal::SIGTSTP) {
             println!("{}: {}", "kill", e.to_string());
             io::stdout().flush().unwrap();
         }

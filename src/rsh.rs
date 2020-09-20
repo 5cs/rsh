@@ -147,6 +147,7 @@ impl Shell for Rsh {
                     println!("{}: {}", "sigprocmask", e.to_string());
                     process::exit(1);
                 }
+                // new job belongs to 1 process group
                 if let Err(e) = unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0)) {
                     println!("{}: {}", "setpgid", e.to_string());
                     process::exit(1);
