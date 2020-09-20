@@ -64,8 +64,7 @@ impl<'a> Cli<'a> {
         let pid = Rsh::get_fg_pid();
         if pid > 0 {
             loop {
-                let pid1 = Rsh::get_fg_pid();
-                if pid1 != pid {
+                if Rsh::get_fg_pid() != pid {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
