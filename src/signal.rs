@@ -4,6 +4,7 @@ extern crate nix;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{self, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use nix::unistd::{self};
 use std::convert::TryFrom;
 use std::io::{self, Write};
 use std::process;
@@ -14,6 +15,9 @@ pub extern "C" fn handle_sigint(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
     let pid = Rsh::get_fg_pid();
     if pid != 0 {
+        let pid = unistd::getpgid(Some(Pid::from_raw(pid)))
+            .unwrap_or(Pid::from_raw(0))
+            .as_raw();
         if let Err(e) = signal::kill(Pid::from_raw(-pid), Signal::SIGINT) {
             println!("{}: {}", "kill", e.to_string());
             io::stdout().flush().unwrap();
@@ -35,11 +39,15 @@ pub extern "C" fn handle_sigchld(signal: libc::c_int) {
                 let pid = n.pid().unwrap();
                 if n == WaitStatus::Stopped(pid, Signal::SIGTSTP) {
                     let jid = { Rsh::set_job_stopped(pid.as_raw()) };
-                    println!("Job [{}] ({}) stopped by signal 20", jid, pid.as_raw());
+                    if jid != 0 {
+                        println!("Job [{}] ({}) stopped by signal 20", jid, pid.as_raw());
+                    }
                 } else {
                     if n == WaitStatus::Signaled(pid, Signal::SIGINT, false) {
                         let jid = { Rsh::get_jid_by_pid(pid.as_raw()) };
-                        println!("Job [{}] ({}) terminated by signal 2", jid, pid.as_raw())
+                        if jid != 0 {
+                            println!("Job [{}] ({}) terminated by signal 2", jid, pid.as_raw())
+                        }
                     }
                     Rsh::delete_job_by_pid(pid.as_raw())
                 }
@@ -53,6 +61,9 @@ pub extern "C" fn handle_sigtstp(signal: libc::c_int) {
     let _signal = Signal::try_from(signal).unwrap();
     let pid = Rsh::get_fg_pid();
     if pid != 0 {
+        let pid = unistd::getpgid(Some(Pid::from_raw(pid)))
+            .unwrap_or(Pid::from_raw(0))
+            .as_raw();
         if let Err(e) = signal::kill(Pid::from_raw(-pid), Signal::SIGTSTP) {
             println!("{}: {}", "kill", e.to_string());
             io::stdout().flush().unwrap();

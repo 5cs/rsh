@@ -51,7 +51,7 @@ impl Default for Rsh {
     fn default() -> Self {
         Rsh {
             emit_prompt: true,
-            prompt: "rsh> ".to_owned(),
+            prompt: "#> ".to_owned(),
             verbose: false,
             next_jid: 1,
             jobs: Vec::new(),
@@ -141,41 +141,75 @@ impl Shell for Rsh {
             println!("{}: {}", "sigprocmask", e.to_string());
             process::exit(1);
         }
+
+        // pipe command
+        // example 0: ls -l | wc
+        // example 1: tee < input.txt | grep cargo | wc > output.txt
+        // example 2: tee < input.txt > output.txt
+        // example 3: tee > output.txt < input.txt
+        let cmds: Vec<_> = cmdline.split('|').map(|x| x.trim()).collect();
+
+        let (cmd, input_fd, output_fd, mut read_end) = Rsh::prepare_fd(&cmds, 0);
+
         match unistd::fork() {
             Ok(ForkResult::Child) => {
                 if let Err(e) = signal::sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&set), None) {
                     println!("{}: {}", "sigprocmask", e.to_string());
                     process::exit(1);
                 }
-                // new job belongs to 1 process group
+                // create job's process group
                 if let Err(e) = unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0)) {
                     println!("{}: {}", "setpgid", e.to_string());
                     process::exit(1);
                 }
-
-                // pipe command
-                // example 0: ls -l | wc
-                // example 1: tee < input.txt | grep cargo | wc > output.txt
-                // example 2: tee < input.txt > output.txt
-                // example 3: tee > output.txt < input.txt
-                let mut cmds: Vec<_> = cmdline.split('|').map(|x| x.trim()).collect();
-                // reverse order, let last command's process run as child of shell process
-                cmds.reverse();
-
-                let mut last_cmd = String::new();
-                last_cmd.push_str(cmds.first().unwrap_or(&""));
-                let (output_fd, cmd): FdCmd =
-                    Rsh::create_fd_and_truncate_redirect_pattern(&mut last_cmd, true);
-                cmds[0] = &cmd;
-                Rsh::process(&cmds, output_fd);
+                if read_end != 0 {
+                    unistd::close(read_end).unwrap();
+                }
+                Rsh::exec(&cmd, input_fd, output_fd);
             }
             Ok(ForkResult::Parent { child, .. }) => {
+                if output_fd != 1 {
+                    unistd::close(output_fd).unwrap();
+                }
+
+                let mut last_child = child;
+                for i in 1..cmds.len() {
+                    let (cmd, _, output_fd, read_end_next) = Rsh::prepare_fd(&cmds, i);
+                    match unistd::fork() {
+                        Ok(ForkResult::Child) => {
+                            if let Err(e) =
+                                signal::sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&set), None)
+                            {
+                                println!("{}: {}", "sigprocmask", e.to_string());
+                                process::exit(1);
+                            }
+                            // add process of this job to process group
+                            if let Err(e) = unistd::setpgid(Pid::from_raw(0), child) {
+                                println!("{}: {}", "setpgid", e.to_string());
+                                process::exit(1);
+                            }
+                            if read_end_next != 0 {
+                                unistd::close(read_end_next).unwrap();
+                            }
+                            Rsh::exec(&cmd, read_end, output_fd);
+                        }
+                        Ok(ForkResult::Parent { child, .. }) => {
+                            if output_fd != 1 {
+                                unistd::close(output_fd).unwrap();
+                            }
+                            last_child = child;
+                        }
+                        Err(_) => println!("fork failed!"),
+                    }
+                    read_end = read_end_next;
+                }
+
                 let bg = match parts.last() {
                     Some(&"&") => true,
                     _ => false,
                 };
                 let state = if bg { State::BG } else { State::FG };
-                self.add_job(child.as_raw(), state, cmdline);
+                self.add_job(last_child.as_raw(), state, cmdline);
                 signal::sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&set), None).unwrap();
                 if bg {
                     print!(
@@ -284,7 +318,10 @@ impl Rsh {
         };
         if job.state == State::ST {
             unsafe {
-                if libc::kill(-job.pid, libc::SIGCONT) == -1 {
+                let pid = unistd::getpgid(Some(Pid::from_raw(job.pid)))
+                    .unwrap()
+                    .as_raw();
+                if libc::kill(-pid, libc::SIGCONT) == -1 {
                     println!("{}", "kill");
                     process::exit(1);
                 }
@@ -333,7 +370,7 @@ impl Rsh {
 
     fn pid_to_jid(&self, pid: i32) -> i32 {
         if let Some(e) = self.jobs.iter().find(|job| job.pid == pid) {
-            e.pid
+            e.jid
         } else {
             0
         }
@@ -351,31 +388,30 @@ impl Rsh {
         self.jobs.iter().max_by_key(|job| job.jid).unwrap().jid + 1
     }
 
-    fn process(cmds: &[&str], pipe_write: i32) {
-        if cmds.len() <= 1 {
-            let mut first_cmd = String::new();
-            first_cmd.push_str(cmds.first().unwrap_or(&""));
-            let (input_fd, cmd): FdCmd =
-                Rsh::create_fd_and_truncate_redirect_pattern(&mut first_cmd, false);
-            Rsh::exec(&cmd, input_fd, pipe_write);
-        } else {
-            let (read_end, write_end) = unistd::pipe().unwrap();
-            match unistd::fork().unwrap() {
-                ForkResult::Parent { .. } => {
-                    unistd::close(write_end).unwrap();
-                    Rsh::exec(cmds.first().unwrap(), read_end, pipe_write);
-                }
-                ForkResult::Child => {
-                    unistd::close(read_end).unwrap();
-                    Rsh::process(&cmds[1..], write_end);
-                }
-            }
-        }
+    fn prepare_fd(cmds: &[&str], index: usize) -> (String, i32, i32, i32) {
+        let mut cmd = String::new();
+        cmd.push_str(cmds.get(index).unwrap_or(&""));
+        let (input_fd, mut cmd): FdCmd =
+            Rsh::create_fd_and_truncate_redirect_pattern(&mut cmd, false);
+        let (mut output_fd, cmd): FdCmd =
+            Rsh::create_fd_and_truncate_redirect_pattern(&mut cmd, true);
+        // pipe
+        let mut read_end = 0;
+        if cmds.len() - 1 > index {
+            let (i, o) = unistd::pipe().unwrap();
+            read_end = i;
+            output_fd = o;
+        };
+        (cmd, input_fd, output_fd, read_end)
     }
 
     fn exec(cmd: &str, input_fd: i32, output_fd: i32) {
-        unistd::dup2(input_fd, 0).unwrap();
-        unistd::dup2(output_fd, 1).unwrap();
+        if input_fd != 0 {
+            unistd::dup2(input_fd, 0).unwrap();
+        }
+        if output_fd != 1 {
+            unistd::dup2(output_fd, 1).unwrap();
+        }
         let parts: Vec<_> = cmd
             .split_whitespace()
             .filter(|&x| x != "&")
