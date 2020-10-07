@@ -82,7 +82,7 @@ impl Shell for Rsh {
         self.do_bgfg(args, false)
     }
 
-    fn list_job(&self) -> CliResult {
+    fn jobs(&self) -> CliResult {
         for job in self.jobs.iter() {
             if job.pid != 0 {
                 print!("[{}] ({}) ", job.jid, job.pid);

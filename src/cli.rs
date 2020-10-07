@@ -36,7 +36,7 @@ impl<'a> Cli<'a> {
             cli.builtin("prompt", |sh, _| sh.prompt());
             cli.builtin("quit", |_, _| process::exit(0));
             cli.builtin("exit", |_, _| process::exit(0));
-            cli.builtin("jobs", |sh, _| sh.list_job());
+            cli.builtin("jobs", |sh, _| sh.jobs());
             cli.builtin("bg", |sh, args| sh.bg(args));
             cli.builtin("fg", |sh, args| sh.fg(args));
             cli.builtin("cd", |sh, args| sh.cd(args));
