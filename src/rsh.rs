@@ -369,18 +369,16 @@ impl Rsh {
     }
 
     fn pid_to_jid(&self, pid: i32) -> i32 {
-        if let Some(e) = self.jobs.iter().find(|job| job.pid == pid) {
-            e.jid
-        } else {
-            0
+        match self.jobs.iter().find(|job| job.pid == pid) {
+            Some(ref e) => e.jid,
+            _ => 0,
         }
     }
 
     fn fg_pid(&self) -> i32 {
-        if let Some(e) = self.jobs.iter().find(|job| job.state == State::FG) {
-            e.pid
-        } else {
-            0
+        match self.jobs.iter().find(|job| job.state == State::FG) {
+            Some(ref e) => e.pid,
+            _ => 0,
         }
     }
 
@@ -460,13 +458,10 @@ impl Rsh {
                     }
                 }
             }
-            None => {
-                if is_output {
-                    1
-                } else {
-                    0
-                }
-            }
+            None => match is_output {
+                true => 1,
+                _ => 0,
+            },
         };
 
         (raw_fd, modified_cmd)
